@@ -23,5 +23,18 @@ service cloud.firestore {
               request.resource.data.notes is string &&
               request.resource.data.uid == request.auth.uid;
     }
+
+    match /sharedPasswords/{documentId} {
+      allow read: if request.auth != null && 
+              (request.auth.uid == resource.data.ownerId || 
+               request.auth.uid == resource.data.sharedWithUid);
+      allow create: if request.auth != null &&
+              request.resource.data.passwordId is string &&
+              request.resource.data.ownerId == request.auth.uid &&
+              request.resource.data.sharedWithEmail is string &&
+              request.resource.data.sharedWithUid is string;
+      allow delete: if request.auth != null && 
+              request.auth.uid == resource.data.ownerId;
+    }
   }
 }

@@ -13,36 +13,77 @@ window.onload = function () {
 
 // #region CRUD
 function loadPasswords() {
-    auth.onAuthStateChanged(function(user) {
+    auth.onAuthStateChanged(function (user) {
         if (!user) {
             alert("Debe iniciar sesión primero");
             return;
         }
 
-        db.collection("dataPassword")
+        passwords = []; 
+
+        // Cargar contraseñas propias
+        const ownPasswordsPromise = db.collection("dataPassword")
             .where("uid", "==", user.uid)
             .get()
             .then(query => {
                 query.forEach(doc => {
-                    let password = doc.data()
-                    password.id = doc.id
+                    let password = doc.data();
+                    password.id = doc.id;
+                    password.isOwner = true;
+                    password.isShared = false;
                     passwords.push(password);
                 });
+            });
 
+        // Cargar contraseñas compartidas
+        const sharedPasswordsPromise = db.collection("sharedPasswords")
+            .where("sharedWithUid", "==", user.uid)
+            .get()
+            .then(async (sharedQuery) => {
+                const sharedPromises = [];
+                sharedQuery.forEach(sharedDoc => {
+                    const sharedData = sharedDoc.data();
+
+                    const passwordPromise = db.collection("dataPassword")
+                        .doc(sharedData.passwordId)
+                        .get()
+                        .then(passwordDoc => {
+                            if (passwordDoc.exists) {
+                                let password = passwordDoc.data();
+                                password.id = passwordDoc.id;
+                                password.isOwner = false;
+                                password.isShared = true;
+                                password.sharedBy = sharedData.ownerEmail || "Usuario";
+                                password.sharedDocId = sharedDoc.id;
+                                passwords.push(password);
+                            }
+                        });
+                    sharedPromises.push(passwordPromise);
+                });
+                return Promise.all(sharedPromises);
+            });
+
+        // Esperar a que ambas consultas terminen 
+        Promise.all([ownPasswordsPromise, sharedPasswordsPromise])
+            .then(() => {
                 renderPasswords();
+            })
+            .catch(error => {
+                console.error("Error al cargar contraseñas:", error);
+                alert("Error al cargar contraseñas: " + error.message);
             });
     });
 }
 
 function savePassword() {
-    auth.onAuthStateChanged(function(user) {
+    auth.onAuthStateChanged(function (user) {
         if (!user) {
             alert("Debe iniciar sesión primero");
             console.dir(auth);
             return;
         }
 
-        const id = document.getElementById('passwordId').value
+        const id = document.getElementById('passwordId').value;
         const website = document.getElementById('website').value;
         const username = document.getElementById('username').value;
         const password = document.getElementById('password').value;
@@ -66,12 +107,15 @@ function savePassword() {
                 expiryDate: expiryDate,
                 notes: notes
             })
-            .then(() => {
-                alert("Contraseña actualizada correctamente");
-            })
-            .catch(error => {
-                alert("Error al actualizar: " + error);
-            });
+                .then(() => {
+                    alert("Contraseña actualizada correctamente");
+                    passwords = [];
+                    loadPasswords();
+                    updateCategoryFilter();
+                })
+                .catch(error => {
+                    alert("Error al actualizar: " + error);
+                });
         } else {
             db.collection("dataPassword").add({
                 website: website,
@@ -83,13 +127,14 @@ function savePassword() {
                 uid: user.uid
             }).then(function (docRef) {
                 alert("Contraseña guardada");
+                passwords = [];
+                loadPasswords();
+                updateCategoryFilter();
             }).catch(function (FirebaseError) {
                 alert("Error al guardar la contraseña: " + FirebaseError);
             });
         }
 
-        loadPasswords();
-        updateCategoryFilter();
         bootstrap.Modal.getInstance(document.getElementById('addPasswordModal')).hide();
         document.getElementById('passwordForm').reset();
         editingId = null;
@@ -98,6 +143,13 @@ function savePassword() {
 
 function editPassword(id) {
     const password = passwords.find(p => p.id === id);
+
+    // Verificar si el usuario es dueño
+    if (!password.isOwner) {
+        alert("No puedes editar una contraseña compartida contigo");
+        return;
+    }
+
     document.getElementById('passwordId').value = password.id;
     document.getElementById('website').value = password.website;
     document.getElementById('username').value = password.username || '';
@@ -110,12 +162,21 @@ function editPassword(id) {
 }
 
 function deletePassword(docId) {
+    const password = passwords.find(p => p.id === docId);
+
+    // Verificar si el usuario es dueño
+    if (!password.isOwner) {
+        alert("No puedes eliminar una contraseña compartida contigo");
+        return;
+    }
+
     if (confirm('¿Estás seguro de eliminar esta contraseña?')) {
         db.collection("dataPassword")
             .doc(docId)
             .delete()
             .then(() => {
                 alert("Contraseña eliminada correctamente");
+                passwords = [];
                 loadPasswords();
                 updateCategoryFilter();
             })
@@ -129,6 +190,13 @@ function deletePassword(docId) {
 // #region Share Password
 function sharePassword(id) {
     const password = passwords.find(p => p.id === id);
+
+    // Verificar si el usuario es dueño
+    if (!password.isOwner) {
+        alert("No puedes compartir una contraseña que ya fue compartida contigo");
+        return;
+    }
+
     document.getElementById('shareWebsite').textContent = password.website;
     editingId = id;
     new bootstrap.Modal(document.getElementById('shareModal')).show();
@@ -140,9 +208,66 @@ function confirmShare() {
         alert('Ingresa un email válido');
         return;
     }
-    alert(`Contraseña compartida con ${email}`);
-    bootstrap.Modal.getInstance(document.getElementById('shareModal')).hide();
-    document.getElementById('shareEmail').value = '';
+
+    auth.onAuthStateChanged(function (user) {
+        if (!user) {
+            alert("Debe iniciar sesión primero");
+            return;
+        }
+
+        // Buscar el usuario por email
+        db.collection("dataUser")
+            .where("email", "==", email)
+            .get()
+            .then(querySnapshot => {
+                if (querySnapshot.empty) {
+                    alert("No se encontró un usuario con ese email");
+                    return;
+                }
+
+                const targetUser = querySnapshot.docs[0].data();
+
+                // Verificar que no se comparta consigo mismo
+                if (targetUser.iduser === user.uid) {
+                    alert("No puedes compartir una contraseña contigo mismo");
+                    return;
+                }
+
+                // Verificar si ya está compartida
+                db.collection("sharedPasswords")
+                    .where("passwordId", "==", editingId)
+                    .where("sharedWithUid", "==", targetUser.iduser)
+                    .get()
+                    .then(existingShares => {
+                        if (!existingShares.empty) {
+                            alert("Esta contraseña ya está compartida con este usuario");
+                            return;
+                        }
+
+                        // Crear el registro de compartición
+                        db.collection("sharedPasswords").add({
+                            passwordId: editingId,
+                            ownerId: user.uid,
+                            ownerEmail: user.email,
+                            sharedWithUid: targetUser.iduser,
+                            sharedWithEmail: email,
+                            sharedAt: firebase.firestore.Timestamp.now()
+                        })
+                            .then(() => {
+                                alert(`Contraseña compartida exitosamente con ${email}`);
+                                bootstrap.Modal.getInstance(document.getElementById('shareModal')).hide();
+                                document.getElementById('shareEmail').value = '';
+                                editingId = null;
+                            })
+                            .catch(error => {
+                                alert("Error al compartir: " + error.message);
+                            });
+                    });
+            })
+            .catch(error => {
+                alert("Error al buscar usuario: " + error.message);
+            });
+    });
 }
 // #endregion
 
@@ -155,7 +280,7 @@ function renderPasswords() {
 
     let filtered = passwords.filter(p => {
         const matchesSearch = p.website.toLowerCase().includes(searchTerm) ||
-            p.category.toLowerCase().includes(searchTerm) || p.notes.toLowerCase().includes(searchTerm);
+            p.category.toLowerCase().includes(searchTerm) || (p.notes && p.notes.toLowerCase().includes(searchTerm));
         const matchesCategory = !categoryFilter || p.category === categoryFilter;
         const matchesStatus = !statusFilter || getPasswordStatus(p.expiryDate) === statusFilter;
         return matchesSearch && matchesCategory && matchesStatus;
@@ -173,11 +298,15 @@ function renderPasswords() {
         const statusClass = status === 'expired' ? 'expired' : status === 'expiring' ? 'expiring-soon' : 'safe';
         const categoryColor = getCategoryColor(p.category);
 
+        // Indicador de contraseña compartida
+        const sharedBadge = p.isShared ?
+            `<span class="badge bg-info ms-2"><i class="fas fa-share"></i> Compartida por ${p.sharedBy}</span>` : '';
+
         return `
                     <div class="password-card ${statusClass}">
                         <div class="row align-items-center">
                             <div class="col-md-4">
-                                <h5 class="mb-1"><i class="fas fa-globe"></i> ${p.website}</h5>
+                                <h5 class="mb-1"><i class="fas fa-globe"></i> ${p.website}${sharedBadge}</h5>
                                 ${p.username ? `<small class="text-muted">Usuario: ${p.username}</small><br>` : ''}
                                 <span class="category-badge" style="background: ${categoryColor}20; color: ${categoryColor}">
                                     ${p.category}
@@ -194,15 +323,21 @@ function renderPasswords() {
                                 ${p.expiryDate ? `<br><small class="text-muted">Vence: ${formatDate(p.expiryDate)}</small>` : ''}
                             </div>
                             <div class="col-md-4 text-end">
-                                <button class="btn btn-sm btn-success btn-action" onclick="editPassword('${p.id}')">
-                                    <i class="fas fa-edit"></i> Editar
-                                </button>
-                                <button class="btn btn-sm btn-info btn-action" onclick="sharePassword('${p.id}')">
-                                    <i class="fas fa-share"></i> Compartir
-                                </button>
-                                <button class="btn btn-sm btn-danger btn-action" onclick="deletePassword('${p.id}')">
-                                    <i class="fas fa-trash"></i> Eliminar
-                                </button>
+                                ${p.isOwner ? `
+                                    <button class="btn btn-sm btn-success btn-action" onclick="editPassword('${p.id}')">
+                                        <i class="fas fa-edit"></i> Editar
+                                    </button>
+                                    <button class="btn btn-sm btn-info btn-action" onclick="sharePassword('${p.id}')">
+                                        <i class="fas fa-share"></i> Compartir
+                                    </button>
+                                    <button class="btn btn-sm btn-danger btn-action" onclick="deletePassword('${p.id}')">
+                                        <i class="fas fa-trash"></i> Eliminar
+                                    </button>
+                                ` : `
+                                    <button class="btn btn-sm btn-secondary btn-action" disabled>
+                                        <i class="fas fa-lock"></i> Solo lectura
+                                    </button>
+                                `}
                             </div>
                         </div>
                         ${p.notes ? `<div class="mt-2"><small><strong>Notas:</strong> ${p.notes}</small></div>` : ''}
@@ -248,7 +383,8 @@ function getCategoryColor(category) {
 // #region Utilities
 
 function formatDate(expiryDate) {
-    return expiryDate.toDate().toISOString().substring(0,10);
+    if (!expiryDate) return '';
+    return expiryDate.toDate().toISOString().substring(0, 10);
 }
 
 function togglePassword(id, password) {
@@ -289,10 +425,10 @@ function generatePassword() {
 
 function exit() {
     auth.signOut().then(() => {
-		document.location.href ='index.html';
-	}).catch((error)=>{
-	   alert('Error al cerrar la sesión: ' + error.message);
-	});
+        document.location.href = 'index.html';
+    }).catch((error) => {
+        alert('Error al cerrar la sesión: ' + error.message);
+    });
 }
 // #endregion
 
