@@ -11,7 +11,8 @@ service cloud.firestore {
     }
 
     match /dataPassword/{documentId} {
-      allow read, update, delete: if request.auth != null && 
+      allow read: if request.auth != null;
+      allow update, delete: if request.auth != null && 
               request.auth.uid == resource.data.uid;
       allow create: if request.auth != null &&
               request.resource.data.website is string &&
@@ -25,9 +26,7 @@ service cloud.firestore {
     }
 
     match /sharedPasswords/{documentId} {
-      allow read: if request.auth != null && 
-              (request.auth.uid == resource.data.ownerId || 
-               request.auth.uid == resource.data.sharedWithUid);
+      allow read: if request.auth != null;
       allow create: if request.auth != null &&
               request.resource.data.passwordId is string &&
               request.resource.data.ownerId == request.auth.uid &&

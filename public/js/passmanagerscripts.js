@@ -19,7 +19,7 @@ function loadPasswords() {
             return;
         }
 
-        passwords = []; 
+        passwords = [];
 
         // Cargar contraseñas propias
         const ownPasswordsPromise = db.collection("dataPassword")
@@ -209,11 +209,11 @@ function confirmShare() {
         return;
     }
 
-    auth.onAuthStateChanged(function (user) {
-        if (!user) {
-            alert("Debe iniciar sesión primero");
-            return;
-        }
+    const user = auth.currentUser;
+    if (!user) {
+        alert("Debe iniciar sesión primero");
+        return;
+    }
 
         // Buscar el usuario por email
         db.collection("dataUser")
@@ -267,7 +267,6 @@ function confirmShare() {
             .catch(error => {
                 alert("Error al buscar usuario: " + error.message);
             });
-    });
 }
 // #endregion
 
