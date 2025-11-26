@@ -17,7 +17,9 @@ service cloud.firestore {
       allow create: if request.auth != null &&
               request.resource.data.website is string &&
               request.resource.data.username is string &&
-              request.resource.data.password is string &&
+              request.resource.data.passwordEncrypted is string &&
+              request.resource.data.iv is string &&
+              request.resource.data.salt is string &&
               request.resource.data.category is string &&
               (request.resource.data.expiryDate is timestamp || 
               request.resource.data.expiryDate == null) &&

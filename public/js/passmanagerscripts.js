@@ -3,6 +3,244 @@ var auth = firebase.apps[0].auth();
 
 let passwords = [];
 let editingId = null;
+let sessionMasterUnlocked = false;
+let currentUserDocId = null;
+let hasMasterPassword = false;
+let masterChecked = false;
+
+const MASTER_SECRET = 'CAMBIA_ESTA_CLAVE_LARGA_Y_UNICA_PARA_TU_PROYECTO';
+
+// ====== Utilidades base64 / cifrado ======
+function bytesToBase64(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+async function deriveKey(saltBytes) {
+    if (!window.crypto || !window.crypto.subtle) {
+        throw new Error('Web Crypto API no soportada en este navegador');
+    }
+
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+        'raw',
+        enc.encode(MASTER_SECRET),
+        { name: 'PBKDF2' },
+        false,
+        ['deriveKey']
+    );
+
+    return crypto.subtle.deriveKey(
+        {
+            name: 'PBKDF2',
+            salt: saltBytes,
+            iterations: 100000,
+            hash: 'SHA-256'
+        },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+    );
+}
+
+async function encryptPassword(plainText) {
+    const enc = new TextEncoder();
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(salt);
+
+    const cipherBuffer = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv },
+        key,
+        enc.encode(plainText)
+    );
+
+    return {
+        cipherText: bytesToBase64(new Uint8Array(cipherBuffer)),
+        iv: bytesToBase64(iv),
+        salt: bytesToBase64(salt)
+    };
+}
+
+async function decryptPassword(cipherTextBase64, ivBase64, saltBase64) {
+    const dec = new TextDecoder();
+    const salt = base64ToBytes(saltBase64);
+    const iv = base64ToBytes(ivBase64);
+    const key = await deriveKey(salt);
+    const cipherBytes = base64ToBytes(cipherTextBase64);
+
+    const plainBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: iv },
+        key,
+        cipherBytes
+    );
+
+    return dec.decode(plainBuffer);
+}
+
+// ====== Clave maestra ======
+async function hashMasterPassword(password, uid) {
+    const enc = new TextEncoder();
+    const data = enc.encode(password + '::' + uid);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return bytesToBase64(new Uint8Array(hashBuffer));
+}
+
+function initializeMasterPassword(user) {
+    if (masterChecked) return;
+    masterChecked = true;
+
+    db.collection("dataUser")
+        .where("iduser", "==", user.uid)
+        .limit(1)
+        .get()
+        .then(snapshot => {
+            if (snapshot.empty) {
+                console.warn('No se encontró dataUser para el usuario');
+                return;
+            }
+            const doc = snapshot.docs[0];
+            currentUserDocId = doc.id;
+            const data = doc.data();
+            hasMasterPassword = !!data.masterPasswordHash;
+        })
+        .catch(err => {
+            console.error('Error al obtener dataUser:', err);
+        });
+}
+
+function showMasterPasswordModal() {
+    const modalEl = document.getElementById('masterPasswordModal');
+    if (!modalEl) {
+        alert('No se encontró el modal de clave maestra en el HTML');
+        return;
+    }
+
+    const title = document.getElementById('masterModalTitle');
+    const desc = document.getElementById('masterModalDescription');
+    const confirmGroup = document.getElementById('masterConfirmGroup');
+    const input = document.getElementById('masterPasswordInput');
+    const confirmInput = document.getElementById('masterPasswordConfirmInput');
+
+    if (input) input.value = '';
+    if (confirmInput) confirmInput.value = '';
+
+    if (hasMasterPassword) {
+        if (title) title.textContent = 'Introduce tu clave maestra';
+        if (desc) desc.textContent = 'Esta clave se usará para mostrar tus contraseñas guardadas.';
+        if (confirmGroup) confirmGroup.style.display = 'none';
+    } else {
+        if (title) title.textContent = 'Crea tu clave maestra';
+        if (desc) desc.textContent = 'Esta clave protegerá la visualización de tus contraseñas. No la compartas con nadie.';
+        if (confirmGroup) confirmGroup.style.display = 'block';
+    }
+
+    try {
+        // Reusar instancia si ya existe, o crear una nueva
+        let modal = bootstrap.Modal.getInstance(modalEl);
+        if (!modal) {
+            modal = new bootstrap.Modal(modalEl, { backdrop: 'static', keyboard: false });
+        }
+        modal.show();
+    } catch (e) {
+        console.error('Error al abrir modal de clave maestra:', e);
+        alert('No se pudo abrir el modal de clave maestra. Revisa la consola del navegador.');
+    }
+}
+
+
+async function submitMasterPassword() {
+    const user = auth.currentUser;
+    if (!user) {
+        alert('Debe iniciar sesión primero');
+        return;
+    }
+
+    const input = document.getElementById('masterPasswordInput');
+    const confirmInput = document.getElementById('masterPasswordConfirmInput');
+    const password = input ? input.value : '';
+    const confirm = confirmInput ? confirmInput.value : '';
+
+    if (!password) {
+        alert('Ingresa tu clave maestra');
+        return;
+    }
+
+    if (!hasMasterPassword) {
+        if (password.length < 8) {
+            alert('La clave maestra debe tener al menos 8 caracteres');
+            return;
+        }
+        if (password !== confirm) {
+            alert('Las claves no coinciden');
+            return;
+        }
+
+        if (!currentUserDocId) {
+            alert('No se encontró el documento de usuario');
+            return;
+        }
+
+        try {
+            const hash = await hashMasterPassword(password, user.uid);
+            await db.collection("dataUser").doc(currentUserDocId).update({
+                masterPasswordHash: hash
+            });
+            hasMasterPassword = true;
+            sessionMasterUnlocked = true;
+            const modalEl = document.getElementById('masterPasswordModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        } catch (e) {
+            console.error(e);
+            alert('Error al guardar la clave maestra');
+        }
+    } else {
+        try {
+            const hash = await hashMasterPassword(password, user.uid);
+            if (!currentUserDocId) {
+                alert('No se encontró el documento de usuario');
+                return;
+            }
+            const doc = await db.collection("dataUser").doc(currentUserDocId).get();
+            const data = doc.data() || {};
+            if (!data.masterPasswordHash) {
+                alert('No hay clave maestra definida');
+                return;
+            }
+            if (hash !== data.masterPasswordHash) {
+                alert('Clave maestra incorrecta');
+                return;
+            }
+            sessionMasterUnlocked = true;
+            const modalEl = document.getElementById('masterPasswordModal');
+            const modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+        } catch (e) {
+            console.error(e);
+            alert('Error al verificar la clave maestra');
+        }
+    }
+}
+
+function ensureMasterUnlocked() {
+    if (sessionMasterUnlocked) return true;
+    showMasterPasswordModal();
+    return false;
+}
 
 // #region Cargar aplicación
 window.onload = function () {
@@ -19,20 +257,41 @@ function loadPasswords() {
             return;
         }
 
+        initializeMasterPassword(user);
         passwords = [];
 
         // Cargar contraseñas propias
         const ownPasswordsPromise = db.collection("dataPassword")
             .where("uid", "==", user.uid)
             .get()
-            .then(query => {
-                query.forEach(doc => {
-                    let password = doc.data();
-                    password.id = doc.id;
-                    password.isOwner = true;
-                    password.isShared = false;
-                    passwords.push(password);
-                });
+            .then(async (query) => {
+                const results = await Promise.all(query.docs.map(async (doc) => {
+                    const data = doc.data();
+                    let plainPassword = data.password || ''; // compatibilidad con datos viejos
+
+                    if (data.passwordEncrypted && data.iv && data.salt) {
+                        try {
+                            plainPassword = await decryptPassword(
+                                data.passwordEncrypted,
+                                data.iv,
+                                data.salt
+                            );
+                        } catch (e) {
+                            console.error("Error al descifrar:", e);
+                            plainPassword = '[Error al descifrar]';
+                        }
+                    }
+
+                    return {
+                        ...data,
+                        id: doc.id,
+                        password: plainPassword,
+                        isOwner: true,
+                        isShared: false
+                    };
+                }));
+
+                passwords.push(...results);
             });
 
         // Cargar contraseñas compartidas
@@ -40,33 +299,49 @@ function loadPasswords() {
             .where("sharedWithUid", "==", user.uid)
             .get()
             .then(async (sharedQuery) => {
-                const sharedPromises = [];
-                sharedQuery.forEach(sharedDoc => {
+                const sharedPromises = sharedQuery.docs.map(async (sharedDoc) => {
                     const sharedData = sharedDoc.data();
 
-                    const passwordPromise = db.collection("dataPassword")
+                    const passwordDoc = await db.collection("dataPassword")
                         .doc(sharedData.passwordId)
-                        .get()
-                        .then(passwordDoc => {
-                            if (passwordDoc.exists) {
-                                let password = passwordDoc.data();
-                                password.id = passwordDoc.id;
-                                password.isOwner = false;
-                                password.isShared = true;
-                                password.sharedBy = sharedData.ownerEmail || "Usuario";
-                                password.sharedDocId = sharedDoc.id;
-                                passwords.push(password);
-                            }
-                        });
-                    sharedPromises.push(passwordPromise);
+                        .get();
+
+                    if (!passwordDoc.exists) return;
+
+                    const data = passwordDoc.data();
+                    let plainPassword = data.password || '';
+
+                    if (data.passwordEncrypted && data.iv && data.salt) {
+                        try {
+                            plainPassword = await decryptPassword(
+                                data.passwordEncrypted,
+                                data.iv,
+                                data.salt
+                            );
+                        } catch (e) {
+                            console.error("Error al descifrar compartida:", e);
+                            plainPassword = '[Error al descifrar]';
+                        }
+                    }
+
+                    passwords.push({
+                        ...data,
+                        id: passwordDoc.id,
+                        password: plainPassword,
+                        isOwner: false,
+                        isShared: true,
+                        sharedBy: sharedData.ownerEmail || "Usuario",
+                        sharedDocId: sharedDoc.id
+                    });
                 });
+
                 return Promise.all(sharedPromises);
             });
 
-        // Esperar a que ambas consultas terminen 
         Promise.all([ownPasswordsPromise, sharedPasswordsPromise])
             .then(() => {
                 renderPasswords();
+                updateCategoryFilter();
             })
             .catch(error => {
                 console.error("Error al cargar contraseñas:", error);
@@ -75,76 +350,84 @@ function loadPasswords() {
     });
 }
 
-function savePassword() {
-    auth.onAuthStateChanged(function (user) {
-        if (!user) {
-            alert("Debe iniciar sesión primero");
-            console.dir(auth);
-            return;
-        }
+async function savePassword() {
+    const user = auth.currentUser;
+    if (!user) {
+        alert("Debe iniciar sesión primero");
+        console.dir(auth);
+        return;
+    }
 
-        const id = document.getElementById('passwordId').value;
-        const website = document.getElementById('website').value;
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
-        const category = document.getElementById('category').value;
-        const expiryDateInput = document.getElementById('expiryDate').value;
-        const notes = document.getElementById('notes').value;
+    const id = document.getElementById('passwordId').value;
+    const website = document.getElementById('website').value;
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+    const category = document.getElementById('category').value;
+    const expiryDateInput = document.getElementById('expiryDate').value;
+    const notes = document.getElementById('notes').value;
 
-        const expiryDate = expiryDateInput ? firebase.firestore.Timestamp.fromDate(new Date(expiryDateInput)) : null;
+    const expiryDate = expiryDateInput ? firebase.firestore.Timestamp.fromDate(new Date(expiryDateInput)) : null;
 
-        if (!website || !password || !category) {
-            alert('Por favor completa todos los campos obligatorios');
-            return;
-        }
+    if (!website || !password || !category) {
+        alert('Por favor completa todos los campos obligatorios');
+        return;
+    }
 
-        if (id) {
-            db.collection("dataPassword").doc(id).update({
-                website: website,
-                username: username,
-                password: password,
-                category: category,
-                expiryDate: expiryDate,
-                notes: notes
-            })
-                .then(() => {
-                    alert("Contraseña actualizada correctamente");
-                    passwords = [];
-                    loadPasswords();
-                    updateCategoryFilter();
-                })
-                .catch(error => {
-                    alert("Error al actualizar: " + error);
-                });
-        } else {
-            db.collection("dataPassword").add({
-                website: website,
-                username: username,
-                password: password,
-                category: category,
-                expiryDate: expiryDate,
-                notes: notes,
-                uid: user.uid
-            }).then(function (docRef) {
-                alert("Contraseña guardada");
+    let encrypted;
+    try {
+        encrypted = await encryptPassword(password);
+    } catch (e) {
+        console.error(e);
+        alert('Error al cifrar la contraseña. No se guardó.');
+        return;
+    }
+
+    const baseData = {
+        website: website,
+        username: username,
+        passwordEncrypted: encrypted.cipherText,
+        iv: encrypted.iv,
+        salt: encrypted.salt,
+        category: category,
+        expiryDate: expiryDate,
+        notes: notes
+    };
+
+    if (id) {
+        db.collection("dataPassword").doc(id).update(baseData)
+            .then(() => {
+                alert("Contraseña actualizada correctamente");
                 passwords = [];
                 loadPasswords();
                 updateCategoryFilter();
-            }).catch(function (FirebaseError) {
-                alert("Error al guardar la contraseña: " + FirebaseError);
+            })
+            .catch(error => {
+                alert("Error al actualizar: " + error);
             });
-        }
+    } else {
+        db.collection("dataPassword").add({
+            ...baseData,
+            uid: user.uid
+        }).then(function (docRef) {
+            alert("Contraseña guardada");
+            passwords = [];
+            loadPasswords();
+            updateCategoryFilter();
+        }).catch(function (FirebaseError) {
+            alert("Error al guardar la contraseña: " + FirebaseError);
+        });
+    }
 
-        bootstrap.Modal.getInstance(document.getElementById('addPasswordModal')).hide();
-        document.getElementById('passwordForm').reset();
-        editingId = null;
-    });
+    const modalEl = document.getElementById('addPasswordModal');
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+    document.getElementById('passwordForm').reset();
+    editingId = null;
 }
 
 function editPassword(id) {
     const password = passwords.find(p => p.id === id);
 
-    // Verificar si el usuario es dueño
     if (!password.isOwner) {
         alert("No puedes editar una contraseña compartida contigo");
         return;
@@ -158,13 +441,15 @@ function editPassword(id) {
     document.getElementById('expiryDate').value = formatDate(password.expiryDate) || '';
     document.getElementById('notes').value = password.notes || '';
     document.getElementById('modalTitle').textContent = 'Editar Contraseña';
+
+    updatePasswordStrength();
+
     new bootstrap.Modal(document.getElementById('addPasswordModal')).show();
 }
 
 function deletePassword(docId) {
     const password = passwords.find(p => p.id === docId);
 
-    // Verificar si el usuario es dueño
     if (!password.isOwner) {
         alert("No puedes eliminar una contraseña compartida contigo");
         return;
@@ -191,7 +476,6 @@ function deletePassword(docId) {
 function sharePassword(id) {
     const password = passwords.find(p => p.id === id);
 
-    // Verificar si el usuario es dueño
     if (!password.isOwner) {
         alert("No puedes compartir una contraseña que ya fue compartida contigo");
         return;
@@ -215,58 +499,56 @@ function confirmShare() {
         return;
     }
 
-        // Buscar el usuario por email
-        db.collection("dataUser")
-            .where("email", "==", email)
-            .get()
-            .then(querySnapshot => {
-                if (querySnapshot.empty) {
-                    alert("No se encontró un usuario con ese email");
-                    return;
-                }
+    db.collection("dataUser")
+        .where("email", "==", email)
+        .get()
+        .then(querySnapshot => {
+            if (querySnapshot.empty) {
+                alert("No se encontró un usuario con ese email");
+                return;
+            }
 
-                const targetUser = querySnapshot.docs[0].data();
+            const targetUser = querySnapshot.docs[0].data();
 
-                // Verificar que no se comparta consigo mismo
-                if (targetUser.iduser === user.uid) {
-                    alert("No puedes compartir una contraseña contigo mismo");
-                    return;
-                }
+            if (targetUser.iduser === user.uid) {
+                alert("No puedes compartir una contraseña contigo mismo");
+                return;
+            }
 
-                // Verificar si ya está compartida
-                db.collection("sharedPasswords")
-                    .where("passwordId", "==", editingId)
-                    .where("sharedWithUid", "==", targetUser.iduser)
-                    .get()
-                    .then(existingShares => {
-                        if (!existingShares.empty) {
-                            alert("Esta contraseña ya está compartida con este usuario");
-                            return;
-                        }
+            db.collection("sharedPasswords")
+                .where("passwordId", "==", editingId)
+                .where("sharedWithUid", "==", targetUser.iduser)
+                .get()
+                .then(existingShares => {
+                    if (!existingShares.empty) {
+                        alert("Esta contraseña ya está compartida con este usuario");
+                        return;
+                    }
 
-                        // Crear el registro de compartición
-                        db.collection("sharedPasswords").add({
-                            passwordId: editingId,
-                            ownerId: user.uid,
-                            ownerEmail: user.email,
-                            sharedWithUid: targetUser.iduser,
-                            sharedWithEmail: email,
-                            sharedAt: firebase.firestore.Timestamp.now()
+                    db.collection("sharedPasswords").add({
+                        passwordId: editingId,
+                        ownerId: user.uid,
+                        ownerEmail: user.email,
+                        sharedWithUid: targetUser.iduser,
+                        sharedWithEmail: email,
+                        sharedAt: firebase.firestore.Timestamp.now()
+                    })
+                        .then(() => {
+                            alert(`Contraseña compartida exitosamente con ${email}`);
+                            const modalEl = document.getElementById('shareModal');
+                            const modal = bootstrap.Modal.getInstance(modalEl);
+                            if (modal) modal.hide();
+                            document.getElementById('shareEmail').value = '';
+                            editingId = null;
                         })
-                            .then(() => {
-                                alert(`Contraseña compartida exitosamente con ${email}`);
-                                bootstrap.Modal.getInstance(document.getElementById('shareModal')).hide();
-                                document.getElementById('shareEmail').value = '';
-                                editingId = null;
-                            })
-                            .catch(error => {
-                                alert("Error al compartir: " + error.message);
-                            });
-                    });
-            })
-            .catch(error => {
-                alert("Error al buscar usuario: " + error.message);
-            });
+                        .catch(error => {
+                            alert("Error al compartir: " + error.message);
+                        });
+                });
+        })
+        .catch(error => {
+            alert("Error al buscar usuario: " + error.message);
+        });
 }
 // #endregion
 
@@ -297,51 +579,50 @@ function renderPasswords() {
         const statusClass = status === 'expired' ? 'expired' : status === 'expiring' ? 'expiring-soon' : 'safe';
         const categoryColor = getCategoryColor(p.category);
 
-        // Indicador de contraseña compartida
         const sharedBadge = p.isShared ?
             `<span class="badge bg-info ms-2"><i class="fas fa-share"></i> Compartida por ${p.sharedBy}</span>` : '';
 
         return `
-                    <div class="password-card ${statusClass}">
-                        <div class="row align-items-center">
-                            <div class="col-md-4">
-                                <h5 class="mb-1"><i class="fas fa-globe"></i> ${p.website}${sharedBadge}</h5>
-                                ${p.username ? `<small class="text-muted">Usuario: ${p.username}</small><br>` : ''}
-                                <span class="category-badge" style="background: ${categoryColor}20; color: ${categoryColor}">
-                                    ${p.category}
-                                </span>
-                            </div>
-                            <div class="col-md-4">
-                                <span class="password-display" id="pwd-${p.id}">••••••••</span>
-                                <button class="btn btn-sm btn-outline-secondary" onclick="togglePassword('${p.id}', '${p.password}')">
-                                    <i class="fas fa-eye"></i>
-                                </button>
-                                <button class="btn btn-sm btn-outline-primary" onclick="copyPassword('${p.password}')">
-                                    <i class="fas fa-copy"></i>
-                                </button>
-                                ${p.expiryDate ? `<br><small class="text-muted">Vence: ${formatDate(p.expiryDate)}</small>` : ''}
-                            </div>
-                            <div class="col-md-4 text-end">
-                                ${p.isOwner ? `
-                                    <button class="btn btn-sm btn-success btn-action" onclick="editPassword('${p.id}')">
-                                        <i class="fas fa-edit"></i> Editar
-                                    </button>
-                                    <button class="btn btn-sm btn-info btn-action" onclick="sharePassword('${p.id}')">
-                                        <i class="fas fa-share"></i> Compartir
-                                    </button>
-                                    <button class="btn btn-sm btn-danger btn-action" onclick="deletePassword('${p.id}')">
-                                        <i class="fas fa-trash"></i> Eliminar
-                                    </button>
-                                ` : `
-                                    <button class="btn btn-sm btn-secondary btn-action" disabled>
-                                        <i class="fas fa-lock"></i> Solo lectura
-                                    </button>
-                                `}
-                            </div>
-                        </div>
-                        ${p.notes ? `<div class="mt-2"><small><strong>Notas:</strong> ${p.notes}</small></div>` : ''}
+            <div class="password-card ${statusClass}">
+                <div class="row align-items-center">
+                    <div class="col-md-4">
+                        <h5 class="mb-1"><i class="fas fa-globe"></i> ${p.website}${sharedBadge}</h5>
+                        ${p.username ? `<small class="text-muted">Usuario: ${p.username}</small><br>` : ''}
+                        <span class="category-badge" style="background: ${categoryColor}20; color: ${categoryColor}">
+                            ${p.category}
+                        </span>
                     </div>
-                `;
+                    <div class="col-md-4">
+                        <span class="password-display" id="pwd-${p.id}">••••••••</span>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="togglePassword('${p.id}')">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="copyPassword('${p.id}')">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                        ${p.expiryDate ? `<br><small class="text-muted">Vence: ${formatDate(p.expiryDate)}</small>` : ''}
+                    </div>
+                    <div class="col-md-4 text-end">
+                        ${p.isOwner ? `
+                            <button class="btn btn-sm btn-success btn-action" onclick="editPassword('${p.id}')">
+                                <i class="fas fa-edit"></i> Editar
+                            </button>
+                            <button class="btn btn-sm btn-info btn-action" onclick="sharePassword('${p.id}')">
+                                <i class="fas fa-share"></i> Compartir
+                            </button>
+                            <button class="btn btn-sm btn-danger btn-action" onclick="deletePassword('${p.id}')">
+                                <i class="fas fa-trash"></i> Eliminar
+                            </button>
+                        ` : `
+                            <button class="btn btn-sm btn-secondary btn-action" disabled>
+                                <i class="fas fa-lock"></i> Solo lectura
+                            </button>
+                        `}
+                    </div>
+                </div>
+                ${p.notes ? `<div class="mt-2"><small><strong>Notas:</strong> ${p.notes}</small></div>` : ''}
+            </div>
+        `;
     }).join('');
 }
 
@@ -349,6 +630,8 @@ function updateCategoryFilter() {
     const categories = [...new Set(passwords.map(p => p.category))];
     const select = document.getElementById('categoryFilter');
     const datalist = document.getElementById('categoryList');
+
+    if (!select || !datalist) return;
 
     select.innerHTML = '<option value="">Todas las categorías</option>' +
         categories.map(c => `<option value="${c}">${c}</option>`).join('');
@@ -386,11 +669,23 @@ function formatDate(expiryDate) {
     return expiryDate.toDate().toISOString().substring(0, 10);
 }
 
-function togglePassword(id, password) {
+function togglePassword(id) {
+    if (!ensureMasterUnlocked()) return;
+
+    const item = passwords.find(p => p.id === id);
+    if (!item) return;
+
+    const password = item.password || '';
     const element = document.getElementById(`pwd-${id}`);
+    if (!element) return;
+
     if (element.textContent === '••••••••') {
         element.textContent = password;
-        setTimeout(() => element.textContent = '••••••••', 5000);
+        setTimeout(() => {
+            if (element.textContent === password) {
+                element.textContent = '••••••••';
+            }
+        }, 5000);
     } else {
         element.textContent = '••••••••';
     }
@@ -399,6 +694,8 @@ function togglePassword(id, password) {
 function togglePasswordVisibility() {
     const input = document.getElementById('password');
     const icon = document.getElementById('toggleIcon');
+    if (!input || !icon) return;
+
     if (input.type === 'password') {
         input.type = 'text';
         icon.className = 'fas fa-eye-slash';
@@ -408,18 +705,117 @@ function togglePasswordVisibility() {
     }
 }
 
-function copyPassword(password) {
-    navigator.clipboard.writeText(password);
-    alert('Contraseña copiada al portapapeles');
+function copyPassword(id) {
+    if (!ensureMasterUnlocked()) return;
+
+    const item = passwords.find(p => p.id === id);
+    if (!item) return;
+
+    const password = item.password || '';
+    navigator.clipboard.writeText(password)
+        .then(() => alert('Contraseña copiada al portapapeles'))
+        .catch(() => alert('No se pudo copiar la contraseña'));
+}
+
+// Fuerza de contraseña
+function calculatePasswordScore(pwd) {
+    let score = 0;
+    if (!pwd) return 0;
+
+    if (pwd.length >= 8) score++;
+    if (pwd.length >= 12) score++;
+    if (/[a-z]/.test(pwd) && /[A-Z]/.test(pwd)) score++;
+    if (/\d/.test(pwd)) score++;
+    if (/[^A-Za-z0-9]/.test(pwd)) score++;
+
+    return Math.min(score, 4);
+}
+
+function updatePasswordStrength() {
+    const pwdInput = document.getElementById('password');
+    const container = document.getElementById('passwordStrength');
+    const bar = document.getElementById('passwordStrengthBar');
+    const text = document.getElementById('passwordStrengthText');
+
+    if (!pwdInput || !container || !bar || !text) return;
+
+    const pwd = pwdInput.value;
+
+    if (!pwd) {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'block';
+    const score = calculatePasswordScore(pwd);
+
+    let width = (score / 4) * 100;
+    let label = '';
+    let barClass = 'bg-danger';
+
+    switch (score) {
+        case 1:
+            label = 'Muy débil';
+            barClass = 'bg-danger';
+            break;
+        case 2:
+            label = 'Débil';
+            barClass = 'bg-warning';
+            break;
+        case 3:
+            label = 'Buena';
+            barClass = 'bg-info';
+            break;
+        case 4:
+            label = 'Fuerte';
+            barClass = 'bg-success';
+            break;
+        default:
+            width = 10;
+            label = 'Muy débil';
+    }
+
+    bar.style.width = width + '%';
+    bar.className = 'progress-bar ' + barClass;
+    text.textContent = 'Fuerza: ' + label;
 }
 
 function generatePassword() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-    let password = '';
-    for (let i = 0; i < 16; i++) {
-        password += chars.charAt(Math.floor(Math.random() * chars.length));
+    const pwdInput = document.getElementById('password');
+    if (!pwdInput) return;
+
+    const length = 16;
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const digits = '0123456789';
+    const symbols = '!@#$%^&*()-_=+[]{};:,.<>?';
+
+    const all = upper + lower + digits + symbols;
+
+    let passwordChars = [
+        upper[Math.floor(Math.random() * upper.length)],
+        lower[Math.floor(Math.random() * lower.length)],
+        digits[Math.floor(Math.random() * digits.length)],
+        symbols[Math.floor(Math.random() * symbols.length)]
+    ];
+
+    const remainingLength = length - passwordChars.length;
+    const randomBytes = new Uint8Array(remainingLength);
+    crypto.getRandomValues(randomBytes);
+
+    for (let i = 0; i < remainingLength; i++) {
+        const index = randomBytes[i] % all.length;
+        passwordChars.push(all[index]);
     }
-    document.getElementById('password').value = password;
+
+    for (let i = passwordChars.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [passwordChars[i], passwordChars[j]] = [passwordChars[j], passwordChars[i]];
+    }
+
+    const password = passwordChars.join('');
+    pwdInput.value = password;
+    updatePasswordStrength();
 }
 
 function exit() {
@@ -440,5 +836,13 @@ document.getElementById('addPasswordModal').addEventListener('hidden.bs.modal', 
     document.getElementById('passwordForm').reset();
     document.getElementById('passwordId').value = '';
     document.getElementById('modalTitle').textContent = 'Agregar Contraseña';
+
+    const strength = document.getElementById('passwordStrength');
+    if (strength) strength.style.display = 'none';
 });
+
+const pwdInput = document.getElementById('password');
+if (pwdInput) {
+    pwdInput.addEventListener('input', updatePasswordStrength);
+}
 // #endregion

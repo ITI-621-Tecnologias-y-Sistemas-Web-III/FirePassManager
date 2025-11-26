@@ -130,6 +130,14 @@
                                 </button>
                             </div>
                         </div>
+						<div class="mt-2" id="passwordStrength" style="display: none;">
+							<div class="progress">
+								<div id="passwordStrengthBar" class="progress-bar" role="progressbar"
+									style="width: 0%">
+								</div>
+							</div>
+							<small id="passwordStrengthText" class="form-text text-muted"></small>
+						</div>
                         <div class="mb-3">
                             <label class="form-label">Categoría *</label>
                             <input type="text" class="form-control" id="category" required placeholder="ej. Redes Sociales, Banco, Email" list="categoryList">
@@ -175,6 +183,35 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
                     <button type="button" class="btn btn-primary" onclick="confirmShare()">Compartir</button>
+                </div>
+            </div>
+        </div>
+    </div>
+	<!-- Modal Clave Maestra -->
+    <div class="modal fade" id="masterPasswordModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="masterModalTitle">Clave maestra</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="masterModalDescription" class="mb-3"></p>
+                    <div class="mb-3">
+                        <label class="form-label">Clave maestra</label>
+                        <input type="password" class="form-control" id="masterPasswordInput">
+                    </div>
+                    <div class="mb-3" id="masterConfirmGroup">
+                        <label class="form-label">Confirmar clave maestra</label>
+                        <input type="password" class="form-control" id="masterPasswordConfirmInput">
+                    </div>
+                    <small class="text-muted">
+                        No compartas esta clave con nadie. Se usará solo para mostrar tus contraseñas.
+                    </small>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-primary" onclick="submitMasterPassword()">Aceptar</button>
                 </div>
             </div>
         </div>
