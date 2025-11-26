@@ -3,6 +3,8 @@ var auth = firebase.apps[0].auth();
 
 let passwords = [];
 let editingId = null;
+let unsubscribeOwn = null;
+let unsubscribeShared = null;
 let sessionMasterUnlocked = false;
 let currentUserDocId = null;
 let hasMasterPassword = false;
@@ -258,16 +260,20 @@ function loadPasswords() {
         }
 
         initializeMasterPassword(user);
+
+        if (unsubscribeOwn) unsubscribeOwn();
+        if (unsubscribeShared) unsubscribeShared();
+
         passwords = [];
 
-        // Cargar contraseñas propias
-        const ownPasswordsPromise = db.collection("dataPassword")
+        unsubscribeOwn = db.collection("dataPassword")
             .where("uid", "==", user.uid)
-            .get()
-            .then(async (query) => {
-                const results = await Promise.all(query.docs.map(async (doc) => {
+            .onSnapshot(async (snapshot) => {
+                passwords = passwords.filter(p => !p.isOwner);
+
+                const results = await Promise.all(snapshot.docs.map(async (doc) => {
                     const data = doc.data();
-                    let plainPassword = data.password || ''; // compatibilidad con datos viejos
+                    let plainPassword = data.password || '';
 
                     if (data.passwordEncrypted && data.iv && data.salt) {
                         try {
@@ -292,21 +298,26 @@ function loadPasswords() {
                 }));
 
                 passwords.push(...results);
+                renderPasswords();
+                updateCategoryFilter();
+            }, error => {
+                console.error("Error en listener de contraseñas propias:", error);
             });
 
-        // Cargar contraseñas compartidas
-        const sharedPasswordsPromise = db.collection("sharedPasswords")
+        unsubscribeShared = db.collection("sharedPasswords")
             .where("sharedWithUid", "==", user.uid)
-            .get()
-            .then(async (sharedQuery) => {
-                const sharedPromises = sharedQuery.docs.map(async (sharedDoc) => {
+            .onSnapshot(async (sharedSnapshot) => {
+
+                passwords = passwords.filter(p => !p.isShared);
+
+                const sharedPromises = sharedSnapshot.docs.map(async (sharedDoc) => {
                     const sharedData = sharedDoc.data();
 
                     const passwordDoc = await db.collection("dataPassword")
                         .doc(sharedData.passwordId)
                         .get();
 
-                    if (!passwordDoc.exists) return;
+                    if (!passwordDoc.exists) return null;
 
                     const data = passwordDoc.data();
                     let plainPassword = data.password || '';
@@ -324,7 +335,7 @@ function loadPasswords() {
                         }
                     }
 
-                    passwords.push({
+                    return {
                         ...data,
                         id: passwordDoc.id,
                         password: plainPassword,
@@ -332,20 +343,17 @@ function loadPasswords() {
                         isShared: true,
                         sharedBy: sharedData.ownerEmail || "Usuario",
                         sharedDocId: sharedDoc.id
-                    });
+                    };
                 });
 
-                return Promise.all(sharedPromises);
-            });
+                const results = await Promise.all(sharedPromises);
+                const validResults = results.filter(r => r !== null);
+                passwords.push(...validResults);
 
-        Promise.all([ownPasswordsPromise, sharedPasswordsPromise])
-            .then(() => {
                 renderPasswords();
                 updateCategoryFilter();
-            })
-            .catch(error => {
-                console.error("Error al cargar contraseñas:", error);
-                alert("Error al cargar contraseñas: " + error.message);
+            }, error => {
+                console.error("Error en listener de contraseñas compartidas:", error);
             });
     });
 }
@@ -456,14 +464,21 @@ function deletePassword(docId) {
     }
 
     if (confirm('¿Estás seguro de eliminar esta contraseña?')) {
-        db.collection("dataPassword")
-            .doc(docId)
-            .delete()
+        db.collection("sharedPasswords")
+            .where("passwordId", "==", docId)
+            .get()
+            .then(snapshot => {
+                const deletePromises = [];
+                snapshot.forEach(doc => {
+                    deletePromises.push(doc.ref.delete());
+                });
+                return Promise.all(deletePromises);
+            })
+            .then(() => {
+                return db.collection("dataPassword").doc(docId).delete();
+            })
             .then(() => {
                 alert("Contraseña eliminada correctamente");
-                passwords = [];
-                loadPasswords();
-                updateCategoryFilter();
             })
             .catch(error => {
                 alert("Error al eliminar: " + error);
