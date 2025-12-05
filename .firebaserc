@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "firepassmanager"
-  }
+    "default": "firepassmanager-fcaa4"
+  },
+  "targets": {},
+  "etags": {}
 }

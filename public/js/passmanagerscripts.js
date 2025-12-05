@@ -11,6 +11,56 @@ let hasMasterPassword = false;
 let masterChecked = false;
 
 const MASTER_SECRET = 'CAMBIA_ESTA_CLAVE_LARGA_Y_UNICA_PARA_TU_PROYECTO';
+let messaging = null;
+
+// Inicializar Firebase Messaging
+function initializeMessaging() {
+    try {
+        messaging = firebase.messaging();
+        requestNotificationPermission();
+    } catch (e) {
+        console.log('Messaging no soportado:', e);
+    }
+}
+
+async function requestNotificationPermission() {
+    try {
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+            const token = await messaging.getToken({
+                vapidKey: 'BLpSucowRneqFU724cvK3JEbp6JnOduPe0Yce54jXSI6R1P5IwUDDFfts3x8_1UdJnQFHFHbqo7-p6JBQqUaPt8'
+            });
+            console.log('Token FCM:', token);
+            // Guardar token en Firestore
+            const user = auth.currentUser;
+            if (user && currentUserDocId) {
+                await db.collection("dataUser").doc(currentUserDocId).update({
+                    fcmToken: token
+                });
+            }
+        }
+    } catch (e) {
+        console.log('Error al solicitar permisos:', e);
+    }
+}
+
+// Verificar contraseñas próximas a vencer y notificar
+function checkExpiringPasswords() {
+    const today = new Date();
+    const expiringPasswords = passwords.filter(p => {
+        if (!p.expiryDate || !p.isOwner) return false;
+        const expiry = p.expiryDate.toDate();
+        const daysUntilExpiry = Math.floor((expiry - today) / (1000 * 60 * 60 * 24));
+        return daysUntilExpiry <= 7 && daysUntilExpiry >= 0;
+    });
+
+    if (expiringPasswords.length > 0 && Notification.permission === 'granted') {
+        new Notification('Contraseñas por vencer', {
+            body: `Tienes ${expiringPasswords.length} contraseña(s) que vencerán pronto`,
+            icon: '/img/logo.svg'
+        });
+    }
+}
 
 // ====== Utilidades base64 / cifrado ======
 function bytesToBase64(bytes) {
@@ -248,6 +298,9 @@ function ensureMasterUnlocked() {
 window.onload = function () {
     loadPasswords();
     updateCategoryFilter();
+    initializeMessaging();
+    // Verificar contraseñas cada hora
+    setInterval(checkExpiringPasswords, 3600000);
 };
 // #endregion
 
@@ -859,5 +912,177 @@ document.getElementById('addPasswordModal').addEventListener('hidden.bs.modal', 
 const pwdInput = document.getElementById('password');
 if (pwdInput) {
     pwdInput.addEventListener('input', updatePasswordStrength);
+}
+// #region Reportes
+function generateReport() {
+    if (passwords.length === 0) {
+        alert('No hay contraseñas para generar reporte');
+        return;
+    }
+
+    const user = auth.currentUser;
+    const reportData = {
+        generatedAt: new Date().toLocaleString('es-ES'),
+        user: user.email,
+        totalPasswords: passwords.length,
+        ownPasswords: passwords.filter(p => p.isOwner).length,
+        sharedPasswords: passwords.filter(p => p.isShared).length,
+        categories: {},
+        status: {
+            safe: 0,
+            expiring: 0,
+            expired: 0
+        }
+    };
+
+    passwords.forEach(p => {
+        // Contar por categoría
+        reportData.categories[p.category] = (reportData.categories[p.category] || 0) + 1;
+        
+        // Contar por estado
+        const status = getPasswordStatus(p.expiryDate);
+        reportData.status[status]++;
+    });
+
+    // Generar HTML del reporte
+    const maxCount = Math.max(...Object.values(reportData.categories));
+    
+    const html = `
+        <div class="report-header">
+            <p><strong>Generado:</strong> ${reportData.generatedAt}</p>
+            <p><strong>Usuario:</strong> ${reportData.user}</p>
+        </div>
+
+        <div class="report-summary">
+            <div class="report-stat-card">
+                <div class="report-stat-label">Total de Contraseñas</div>
+                <div class="report-stat-value">${reportData.totalPasswords}</div>
+            </div>
+            <div class="report-stat-card">
+                <div class="report-stat-label">Propias</div>
+                <div class="report-stat-value">${reportData.ownPasswords}</div>
+            </div>
+            <div class="report-stat-card">
+                <div class="report-stat-label">Compartidas</div>
+                <div class="report-stat-value">${reportData.sharedPasswords}</div>
+            </div>
+        </div>
+
+        <div class="report-section">
+            <h3><i class="fas fa-heartbeat"></i> Estado de Contraseñas</h3>
+            <div class="report-summary">
+                <div class="report-stat-card" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+                    <div class="report-stat-label">Vigentes</div>
+                    <div class="report-stat-value">${reportData.status.safe}</div>
+                </div>
+                <div class="report-stat-card" style="background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);">
+                    <div class="report-stat-label">Por Vencer</div>
+                    <div class="report-stat-value">${reportData.status.expiring}</div>
+                </div>
+                <div class="report-stat-card" style="background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);">
+                    <div class="report-stat-label">Vencidas</div>
+                    <div class="report-stat-value">${reportData.status.expired}</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="report-section">
+            <h3><i class="fas fa-layer-group"></i> Distribución por Categoría</h3>
+            ${Object.entries(reportData.categories).map(([cat, count]) => {
+                const percentage = (count / reportData.totalPasswords * 100).toFixed(1);
+                const width = (count / maxCount * 100);
+                return `
+                    <div class="chart-bar">
+                        <div class="chart-label">${cat}</div>
+                        <div class="chart-bar-fill" style="width: ${width}%">
+                            ${count} (${percentage}%)
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+
+        <div class="report-section">
+            <h3><i class="fas fa-list"></i> Detalle de Contraseñas</h3>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th>Sitio Web</th>
+                        <th>Categoría</th>
+                        <th>Usuario</th>
+                        <th>Vencimiento</th>
+                        <th>Estado</th>
+                        <th>Tipo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${passwords.map(p => {
+                        const status = getPasswordStatus(p.expiryDate);
+                        const statusText = status === 'safe' ? 'Vigente' : status === 'expiring' ? 'Por vencer' : 'Vencida';
+                        const statusClass = 'status-' + status;
+                        return `
+                            <tr>
+                                <td><strong>${p.website}</strong></td>
+                                <td><span class="category-badge" style="background: ${getCategoryColor(p.category)}20; color: ${getCategoryColor(p.category)}">${p.category}</span></td>
+                                <td>${p.username || '-'}</td>
+                                <td>${p.expiryDate ? formatDate(p.expiryDate) : 'Sin vencimiento'}</td>
+                                <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                                <td>${p.isShared ? '<i class="fas fa-share text-info"></i> Compartida' : '<i class="fas fa-user text-primary"></i> Propia'}</td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+
+    // Mostrar el reporte en el modal
+    document.getElementById('reportContent').innerHTML = html;
+    const modal = new bootstrap.Modal(document.getElementById('reportModal'));
+    modal.show();
+}
+
+function printReport() {
+    const content = document.getElementById('reportContent').innerHTML;
+    const printWindow = window.open('', '', 'height=600,width=800');
+    
+    printWindow.document.write(`
+        <html>
+        <head>
+            <title>Reporte de Contraseñas</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; }
+                .report-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin: 20px 0; }
+                .report-stat-card { background: #667eea; color: white; padding: 20px; border-radius: 10px; text-align: center; }
+                .report-stat-value { font-size: 36px; font-weight: bold; margin: 10px 0; }
+                .report-stat-label { font-size: 14px; }
+                .report-section { margin: 30px 0; }
+                .report-section h3 { color: #667eea; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
+                .report-table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+                .report-table th { background: #667eea; color: white; padding: 12px; text-align: left; }
+                .report-table td { padding: 10px 12px; border-bottom: 1px solid #ddd; }
+                .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+                .status-safe { background: #d4edda; color: #155724; }
+                .status-expiring { background: #fff3cd; color: #856404; }
+                .status-expired { background: #f8d7da; color: #721c24; }
+                .category-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; }
+                .chart-bar { display: flex; align-items: center; margin: 10px 0; }
+                .chart-label { width: 150px; font-weight: 500; }
+                .chart-bar-fill { height: 30px; background: #667eea; border-radius: 5px; padding: 0 10px; color: white; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <h1>Reporte de Contraseñas</h1>
+            ${content}
+        </body>
+        </html>
+    `);
+    
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+        printWindow.print();
+        printWindow.close();
+    }, 250);
 }
 // #endregion

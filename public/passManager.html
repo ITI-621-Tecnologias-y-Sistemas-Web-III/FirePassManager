@@ -39,6 +39,7 @@
 	<script src="/__/firebase/init.js"></script>
 
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script src="/__/firebase/12.5.0/firebase-messaging-compat.js"></script>
 </head>
 <body>
 	<header class="header row">
@@ -65,6 +66,9 @@
 					<button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#addPasswordModal">
 						<i class="fas fa-plus"></i> Agregar contraseña
 					</button>
+                    <button class="btn btn-info btn-lg ms-2" onclick="generateReport()">
+                        <i class="fas fa-file-download"></i> Generar Reporte
+                </button>
 				</div>
 			</div>
 		</div>
@@ -183,6 +187,26 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
                     <button type="button" class="btn btn-primary" onclick="confirmShare()">Compartir</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Modal Reportes -->
+    <div class="modal fade" id="reportModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-chart-bar"></i> Reporte de Contraseñas</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="reportContent">
+                    <!-- El contenido se generará dinámicamente -->
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                    <button type="button" class="btn btn-primary" onclick="printReport()">
+                        <i class="fas fa-print"></i> Imprimir
+                    </button>
                 </div>
             </div>
         </div>
