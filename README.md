@@ -5,7 +5,7 @@
 **Campus:** Pacífico (JRMP)  
 **College career:** Ingeniería en Tecnologías de Información  
 **Period:** 3C-2025  
-**Course:** ITI-712 – Tecnologías y Sistemas Web III  
+**Course:** ITI-621 – Tecnologías y Sistemas Web III  
 **Document:** Final Project – Password Manager (Web App)  
 
 **Professor:** Jorge Ruiz (york)  
