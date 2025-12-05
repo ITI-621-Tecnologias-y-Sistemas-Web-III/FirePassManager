@@ -1,17 +1,22 @@
 ==================================================================================================================================================
-Study Center....: Universidad Técnica Nacional
-Campus..........: Pacífico (JRMP)
-College career..: Ingeniería en Tecnologías de Información
-Period..........: 3C-2025
-Course..........: ITI-712 – Tecnologías y Sistemas Web III
-Document........: Final Project – Password Manager (Web App)
+---
 
-Professor.......: Jorge Ruiz (york)
-Students........: Michael Carranza Porras, Frank Mora, Kevin Picado, Kevin Alfonso Núñez Parra
-Title...........: Password Manager with Firebase
-Description.....: Secure web-based password manager using Firebase Authentication and Cloud Firestore.
-                  Users can register, log in, store, share and manage encrypted credentials, and receive
-                  local browser notifications when passwords are close to expiration.
+**Study Center:** Universidad Técnica Nacional  
+**Campus:** Pacífico (JRMP)  
+**College career:** Ingeniería en Tecnologías de Información  
+**Period:** 3C-2025  
+**Course:** ITI-712 – Tecnologías y Sistemas Web III  
+**Document:** Final Project – Password Manager (Web App)  
+
+**Professor:** Jorge Ruiz (york)  
+**Students:** Michael Carranza Porras, Frank Mora, Kevin Picado, Kevin Alfonso Núñez Parra  
+**Title:** Password Manager with Firebase  
+**Description:** Secure web-based password manager using Firebase Authentication and Cloud Firestore.  
+Users can register, log in, store, share and manage encrypted credentials, and receive local browser  
+notifications when passwords are close to expiration.
+
+---
+
 
 ==================================================================================================================================================
 
