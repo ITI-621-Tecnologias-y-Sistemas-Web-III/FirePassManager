@@ -1,4 +1,4 @@
-==================================================================================================================================================
+=====================================================================================================================================
 Study Center....: Universidad Técnica Nacional  
 Campus..........: Pacífico (JRMP)  
 College career..: Ingeniería en Tecnologías de Información  
@@ -12,8 +12,7 @@ Title...........: Password Manager with Firebase
 Description.....: Secure web-based password manager using Firebase Authentication and Cloud Firestore.
                   Users can register, log in, store, share and manage encrypted credentials, and receive
                   local browser notifications when passwords are close to expiration.
-==================================================================================================================================================
-
+=====================================================================================================================================
 ## 1. Problem description
 
 Users today manage many different credentials (university platforms, social networks, banking, etc.).
@@ -76,7 +75,7 @@ applies encryption in the browser and allows controlled sharing and basic report
 
 ---
 
-## 5. UML sequence diagrams (Mermaid)
+## 5. UML sequence diagrams
 
 ### 5.1 Users maintenance – registration and profile creation
 
