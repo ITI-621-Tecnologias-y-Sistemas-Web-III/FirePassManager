@@ -80,7 +80,6 @@ applies encryption in the browser and allows controlled sharing and basic report
 
 ### 5.1 Users maintenance – registration and profile creation
 
-```mermaid
 sequenceDiagram
     participant U as User
     participant UI as Web App
