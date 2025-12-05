@@ -1072,7 +1072,7 @@ function printReport() {
             </style>
         </head>
         <body>
-            <h1>📊 Reporte de Contraseñas</h1>
+            <h1>Reporte de Contraseñas</h1>
             ${content}
         </body>
         </html>
